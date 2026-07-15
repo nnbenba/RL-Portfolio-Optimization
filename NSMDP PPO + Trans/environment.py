@@ -104,6 +104,7 @@ class PortfolioEnv:
         ns_model=None,                  # NonStationaryReturnModel or None
         seed:          int | None = None,
         turnover_coef: float = 0.0,     # lambda in  R_net = R_t - lambda * Sum|dw|
+        rebalance_every: int = 1,       # trade only every k days; hold/drift in between
     ):
         idx            = log_returns.index
         self.log_ret   = log_returns.reindex(idx).values.astype(np.float32)   # (D, n_sectors)
@@ -119,6 +120,7 @@ class PortfolioEnv:
         self.ns_model  = ns_model
         self.rng       = np.random.default_rng(seed)
         self.turnover_coef = turnover_coef
+        self.rebalance_every = max(1, int(rebalance_every))
 
         self.n_sectors = log_returns.shape[1]
         self.n_assets  = self.n_sectors + 1
@@ -130,6 +132,7 @@ class PortfolioEnv:
             f"belief shape {self.belief.shape} != {(self.n_days, N_REGIMES)}"
 
         self.t = self.shares = self.cash = self.weights = self.port_val = self.dsr = None
+        self.step_count = 0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -140,6 +143,7 @@ class PortfolioEnv:
             raise ValueError(f"start_idx ({start_idx}) must be >= T ({self.T})")
 
         self.t           = start_idx
+        self.step_count  = 0
         self.shares      = np.zeros(self.n_sectors, dtype=np.float32)
         self.cash        = float(self.start_cash)
         self.weights     = np.zeros(self.n_assets, dtype=np.float32)
@@ -151,15 +155,25 @@ class PortfolioEnv:
     def step(self, weights: np.ndarray) -> tuple[np.ndarray, float, bool, dict]:
         assert self.t is not None, "Call reset() before step()."
 
-        # Turnover c_t = Sum_i|w_target - w_held|, measured BEFORE overwriting
-        # self.weights (which holds the drifted, currently-held weights).
-        turnover = float(np.abs(weights - self.weights).sum())
+        # Rebalance only every `rebalance_every` steps; on the intervening days we
+        # HOLD (shares/cash unchanged) and let the weights drift with prices. This
+        # is where turnover — and therefore trading cost — is actually incurred.
+        do_rebalance = (self.step_count % self.rebalance_every == 0)
+        self.step_count += 1
 
-        # 1. Rebalance at today's closing prices (frictionless, immediate)
-        self.shares, self.cash = _rebalance(
-            weights, self.prices[self.t], self.port_val, self.n_sectors
-        )
-        self.weights = weights.copy()
+        if do_rebalance:
+            # Turnover c_t = Sum_i|w_target - w_held|, measured BEFORE overwriting
+            # self.weights (which holds the drifted, currently-held weights).
+            turnover = float(np.abs(weights - self.weights).sum())
+            # 1. Rebalance at today's closing prices (frictionless, immediate)
+            self.shares, self.cash = _rebalance(
+                weights, self.prices[self.t], self.port_val, self.n_sectors
+            )
+            self.weights = weights.copy()
+        else:
+            # Hold: no trade this step, so no turnover cost. The agent's proposed
+            # `weights` are ignored; positions simply drift until the next rebalance.
+            turnover = 0.0
 
         # 2. Advance one trading day
         self.t += 1
