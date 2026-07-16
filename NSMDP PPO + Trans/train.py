@@ -37,8 +37,9 @@ VALUE_COEF      = 0.5
 MAX_GRAD_NORM   = 0.5
 START_CASH      = 100_000
 CHECKPOINT_DIR  = "checkpoints"
-TURNOVER_COEF   = 0.0005   # lambda = c: cost per unit turnover in R_net = R_t - lambda*Sum|dw|
-                          # (= 5 bps). Set 0.0 to recover the plain frictionless DSR.
+TURNOVER_COEF   = 0.002    # lambda = c: cost per unit turnover in R_net = R_t - lambda*Sum|dw|
+                          # (= 20 bps). Set 0.0 to recover the plain frictionless DSR.
+REB_FREQ        = 5        # rebalance every 5 trading days (weekly); agent still acts daily
 
 # ── 10 sliding windows ─────────────────────────────────────────────────────────
 # Window i: train [2006+i, 2011+i), val [2011+i, 2012+i), test [2012+i, 2013+i)
@@ -88,7 +89,8 @@ def _make_env(data, belief=None, ns_model=None, seed=None):
     if belief is None:
         belief = np.full((len(log_returns), N_REGIMES), 1.0 / N_REGIMES, dtype=np.float32)
     return PortfolioEnv(sector_prices, log_returns, vix, vol20, vol60, belief, START_CASH,
-                        ns_model=ns_model, seed=seed, turnover_coef=TURNOVER_COEF)
+                        ns_model=ns_model, seed=seed, turnover_coef=TURNOVER_COEF,
+                        reb_freq=REB_FREQ)
 
 
 def _date_idx(env, date_str):

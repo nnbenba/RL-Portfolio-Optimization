@@ -104,6 +104,7 @@ class PortfolioEnv:
         ns_model=None,                  # NonStationaryReturnModel or None
         seed:          int | None = None,
         turnover_coef: float = 0.0,     # lambda in  R_net = R_t - lambda * Sum|dw|
+        reb_freq:      int   = 1,       # rebalance every reb_freq trading days (1 = daily)
     ):
         idx            = log_returns.index
         self.log_ret   = log_returns.reindex(idx).values.astype(np.float32)   # (D, n_sectors)
@@ -119,6 +120,7 @@ class PortfolioEnv:
         self.ns_model  = ns_model
         self.rng       = np.random.default_rng(seed)
         self.turnover_coef = turnover_coef
+        self.reb_freq  = max(1, int(reb_freq))
 
         self.n_sectors = log_returns.shape[1]
         self.n_assets  = self.n_sectors + 1
@@ -146,20 +148,32 @@ class PortfolioEnv:
         self.weights[-1] = 1.0
         self.port_val    = float(self.start_cash)
         self.dsr         = DifferentialSharpeRatio(eta=self.eta)
+        self._step_count = 0             # counts steps since reset; gates rebalancing
         return self._build_state()
 
     def step(self, weights: np.ndarray) -> tuple[np.ndarray, float, bool, dict]:
         assert self.t is not None, "Call reset() before step()."
 
-        # Turnover c_t = Sum_i|w_target - w_held|, measured BEFORE overwriting
-        # self.weights (which holds the drifted, currently-held weights).
-        turnover = float(np.abs(weights - self.weights).sum())
+        # Weekly-rebalance gate: the agent still acts every day, but the env only
+        # executes a trade every reb_freq-th day (days 0, reb_freq, 2*reb_freq, ...).
+        # On off-days the agent's target is ignored: shares are held and the weights
+        # drift with prices, so no turnover cost is incurred.
+        rebalance_today = (self._step_count % self.reb_freq == 0)
+        self._step_count += 1
 
-        # 1. Rebalance at today's closing prices (frictionless, immediate)
-        self.shares, self.cash = _rebalance(
-            weights, self.prices[self.t], self.port_val, self.n_sectors
-        )
-        self.weights = weights.copy()
+        if rebalance_today:
+            # Turnover c_t = Sum_i|w_target - w_held|, measured BEFORE overwriting
+            # self.weights (which holds the drifted, currently-held weights).
+            turnover = float(np.abs(weights - self.weights).sum())
+
+            # 1. Rebalance at today's closing prices (frictionless, immediate)
+            self.shares, self.cash = _rebalance(
+                weights, self.prices[self.t], self.port_val, self.n_sectors
+            )
+            self.weights = weights.copy()
+        else:
+            # Hold: no trade, no turnover cost. Shares/cash unchanged; weights drift.
+            turnover = 0.0
 
         # 2. Advance one trading day
         self.t += 1
